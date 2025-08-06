@@ -2,6 +2,8 @@ from flask import Flask, request, redirect, render_template_string, jsonify
 import sqlite3
 import random
 import os
+import re
+from markupsafe import Markup
 
 app = Flask(__name__)
 DB_PATH = os.path.join(os.path.dirname(__file__), 'database.db')
@@ -27,10 +29,18 @@ def init_db():
         )''')
 init_db()
 
+# 匿名ID生成
 def generate_anon_id():
     return f"{random.randint(0,9999):04d}"
 
-# INDEXページ
+# >>1 のようなリンクを <a> に変換
+def convert_reply_links(text):
+    def repl(m):
+        num = m.group(1)
+        return f'<a href="#post-{num}" class="reply-link">&gt;&gt;{num}</a>'
+    return Markup(re.sub(r'>>(\d+)', repl, text))
+
+# INDEX
 INDEX_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -92,7 +102,7 @@ INDEX_HTML = '''
 <body>
 <h1>スレッド一覧</h1>
 <a href="/new_thread" class="new-thread-btn">＋ 新しいスレッドを作成</a>
-<div id="thread-list">
+<div>
 {% for t in threads %}
   <div class="thread">
     <a class="title" href="/thread/{{ t[0] }}">{{ t[1] }}</a><br>
@@ -102,31 +112,11 @@ INDEX_HTML = '''
   <p>スレッドがありません</p>
 {% endfor %}
 </div>
-
-<script>
-async function fetchThreads() {
-  const res = await fetch("/threads");
-  const data = await res.json();
-  const threadList = document.getElementById("thread-list");
-  threadList.innerHTML = "";
-
-  data.threads.forEach(t => {
-    const div = document.createElement("div");
-    div.className = "thread";
-    div.innerHTML = `
-      <a class="title" href="/thread/${t.id}">${t.title}</a><br>
-      <div class="meta">匿名${t.anon_id} / ${t.created_at}</div>
-    `;
-    threadList.appendChild(div);
-  });
-}
-setInterval(fetchThreads, 5000); // 5秒ごとに更新
-</script>
 </body>
 </html>
 '''
 
-# 新スレッド作成ページ
+# NEW THREAD
 NEW_THREAD_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -150,21 +140,12 @@ NEW_THREAD_HTML = '''
     border-bottom: 2px solid #1a73e8;
     padding-bottom: 10px;
   }
-  form {
-    margin-top: 20px;
-  }
   input[type=text] {
     width: 100%;
     padding: 12px 14px;
     font-size: 16px;
     border: 1.5px solid #dbe9ff;
     border-radius: 6px;
-    box-sizing: border-box;
-    transition: border-color 0.3s ease;
-  }
-  input[type=text]:focus {
-    border-color: #1a73e8;
-    outline: none;
   }
   button {
     margin-top: 20px;
@@ -176,20 +157,12 @@ NEW_THREAD_HTML = '''
     font-weight: 600;
     border-radius: 6px;
     cursor: pointer;
-    transition: background-color 0.3s ease;
-  }
-  button:hover {
-    background-color: #1669c1;
   }
   a {
     display: inline-block;
     margin-top: 25px;
     color: #555;
     text-decoration: none;
-  }
-  a:hover {
-    color: #000;
-    text-decoration: underline;
   }
 </style>
 </head>
@@ -204,7 +177,7 @@ NEW_THREAD_HTML = '''
 </html>
 '''
 
-# スレッド表示ページ（投稿は自動更新）
+# THREAD VIEW
 THREAD_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -237,19 +210,27 @@ THREAD_HTML = '''
     border-bottom: 1px solid #dbe9ff;
     padding: 15px 0;
   }
-  .anon {
+  .post .anon {
     font-weight: 700;
     color: #3c4043;
   }
-  .date {
+  .post .date {
     font-size: 12px;
     color: #80868b;
     margin-left: 12px;
   }
-  .content {
+  .post .content {
     margin-top: 8px;
     white-space: pre-wrap;
     line-height: 1.5;
+  }
+  .reply-link {
+    color: #1a73e8;
+    text-decoration: none;
+    font-weight: bold;
+  }
+  .reply-link:hover {
+    text-decoration: underline;
   }
   form textarea {
     width: 100%;
@@ -259,11 +240,6 @@ THREAD_HTML = '''
     border-radius: 6px;
     border: 1.5px solid #dbe9ff;
     resize: vertical;
-    transition: border-color 0.3s ease;
-  }
-  form textarea:focus {
-    border-color: #1a73e8;
-    outline: none;
   }
   form button {
     margin-top: 15px;
@@ -275,10 +251,12 @@ THREAD_HTML = '''
     font-weight: 600;
     border-radius: 6px;
     cursor: pointer;
-    transition: background-color 0.3s ease;
   }
-  form button:hover {
-    background-color: #1669c1;
+  a {
+    display: inline-block;
+    margin-top: 30px;
+    color: #555;
+    text-decoration: none;
   }
 </style>
 </head>
@@ -288,9 +266,10 @@ THREAD_HTML = '''
 
 <div id="post-list">
 {% for p in posts %}
-  <div class="post">
-    <span class="anon">匿名{{ p[2] }}</span><span class="date">{{ p[3] }}</span>
-    <div class="content">{{ p[1] }}</div>
+  <div class="post" id="post-{{ p.id }}">
+    <span class="anon">{{ p.id }}. 匿名{{ p.anon_id }}</span>
+    <span class="date">{{ p.created_at }}</span>
+    <div class="content">{{ p.content|safe }}</div>
   </div>
 {% else %}
   <p>まだ投稿はありません。</p>
@@ -301,7 +280,6 @@ THREAD_HTML = '''
   <textarea name="content" placeholder="コメントを書く" required></textarea>
   <button type="submit">投稿する</button>
 </form>
-
 <a href="/">← スレッド一覧に戻る</a>
 
 <script>
@@ -314,8 +292,9 @@ async function fetchPosts() {
   data.posts.forEach(post => {
     const div = document.createElement("div");
     div.className = "post";
+    div.id = `post-${post.id}`;
     div.innerHTML = `
-      <span class="anon">匿名${post.anon_id}</span>
+      <span class="anon">${post.id}. 匿名${post.anon_id}</span>
       <span class="date">${post.created_at}</span>
       <div class="content">${post.content}</div>
     `;
@@ -328,8 +307,7 @@ setInterval(fetchPosts, 5000);
 </html>
 '''
 
-# Flaskルーティング
-
+# 各ルート処理
 @app.route('/')
 def index():
     con = sqlite3.connect(DB_PATH)
@@ -360,33 +338,40 @@ def thread(thread_id):
         con.commit()
 
     thread = con.execute('SELECT id, title, anon_id, created_at FROM threads WHERE id=?', (thread_id,)).fetchone()
-    posts = con.execute('SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at', (thread_id,)).fetchall()
+    posts_raw = con.execute(
+        'SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at',
+        (thread_id,)
+    ).fetchall()
     con.close()
 
     if thread is None:
         return "スレッドが見つかりません", 404
+
+    posts = [
+        {"id": row[0], "content": convert_reply_links(row[1]), "anon_id": row[2], "created_at": row[3]}
+        for row in posts_raw
+    ]
 
     return render_template_string(THREAD_HTML, thread=thread, posts=posts)
 
 @app.route('/thread/<int:thread_id>/posts')
 def get_posts(thread_id):
     con = sqlite3.connect(DB_PATH)
-    posts = con.execute('SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at', (thread_id,)).fetchall()
+    posts_raw = con.execute(
+        'SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at',
+        (thread_id,)
+    ).fetchall()
     con.close()
-    return jsonify({"posts": [
-        {"id": row[0], "content": row[1], "anon_id": row[2], "created_at": row[3]}
-        for row in posts
-    ]})
-
-@app.route('/threads')
-def get_threads():
-    con = sqlite3.connect(DB_PATH)
-    threads = con.execute('SELECT id, title, anon_id, created_at FROM threads ORDER BY created_at DESC').fetchall()
-    con.close()
-    return jsonify({"threads": [
-        {"id": t[0], "title": t[1], "anon_id": t[2], "created_at": t[3]}
-        for t in threads
-    ]})
+    posts = [
+        {
+            "id": row[0],
+            "content": str(convert_reply_links(row[1])),
+            "anon_id": row[2],
+            "created_at": row[3]
+        }
+        for row in posts_raw
+    ]
+    return jsonify({"posts": posts})
 
 if __name__ == '__main__':
     app.run(debug=True)
