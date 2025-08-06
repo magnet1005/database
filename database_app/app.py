@@ -2,8 +2,6 @@ from flask import Flask, request, redirect, render_template_string, jsonify
 import sqlite3
 import random
 import os
-import re
-from markupsafe import Markup
 
 app = Flask(__name__)
 DB_PATH = os.path.join(os.path.dirname(__file__), 'database.db')
@@ -27,20 +25,12 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
         )''')
+
 init_db()
 
-# 匿名ID生成
 def generate_anon_id():
     return f"{random.randint(0,9999):04d}"
 
-# >>1 のようなリンクを <a> に変換
-def convert_reply_links(text):
-    def repl(m):
-        num = m.group(1)
-        return f'<a href="#post-{num}" class="reply-link">&gt;&gt;{num}</a>'
-    return Markup(re.sub(r'>>(\d+)', repl, text))
-
-# INDEX
 INDEX_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -116,7 +106,6 @@ INDEX_HTML = '''
 </html>
 '''
 
-# NEW THREAD
 NEW_THREAD_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -140,12 +129,21 @@ NEW_THREAD_HTML = '''
     border-bottom: 2px solid #1a73e8;
     padding-bottom: 10px;
   }
+  form {
+    margin-top: 20px;
+  }
   input[type=text] {
     width: 100%;
     padding: 12px 14px;
     font-size: 16px;
     border: 1.5px solid #dbe9ff;
     border-radius: 6px;
+    box-sizing: border-box;
+    transition: border-color 0.3s ease;
+  }
+  input[type=text]:focus {
+    border-color: #1a73e8;
+    outline: none;
   }
   button {
     margin-top: 20px;
@@ -157,12 +155,20 @@ NEW_THREAD_HTML = '''
     font-weight: 600;
     border-radius: 6px;
     cursor: pointer;
+    transition: background-color 0.3s ease;
+  }
+  button:hover {
+    background-color: #1669c1;
   }
   a {
     display: inline-block;
     margin-top: 25px;
     color: #555;
     text-decoration: none;
+  }
+  a:hover {
+    color: #000;
+    text-decoration: underline;
   }
 </style>
 </head>
@@ -177,7 +183,6 @@ NEW_THREAD_HTML = '''
 </html>
 '''
 
-# THREAD VIEW
 THREAD_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -224,14 +229,6 @@ THREAD_HTML = '''
     white-space: pre-wrap;
     line-height: 1.5;
   }
-  .reply-link {
-    color: #1a73e8;
-    text-decoration: none;
-    font-weight: bold;
-  }
-  .reply-link:hover {
-    text-decoration: underline;
-  }
   form textarea {
     width: 100%;
     height: 110px;
@@ -240,6 +237,11 @@ THREAD_HTML = '''
     border-radius: 6px;
     border: 1.5px solid #dbe9ff;
     resize: vertical;
+    transition: border-color 0.3s ease;
+  }
+  form textarea:focus {
+    border-color: #1a73e8;
+    outline: none;
   }
   form button {
     margin-top: 15px;
@@ -251,12 +253,37 @@ THREAD_HTML = '''
     font-weight: 600;
     border-radius: 6px;
     cursor: pointer;
+    transition: background-color 0.3s ease;
+  }
+  form button:hover {
+    background-color: #1669c1;
   }
   a {
     display: inline-block;
     margin-top: 30px;
     color: #555;
     text-decoration: none;
+  }
+  a:hover {
+    text-decoration: underline;
+    color: #000;
+  }
+  .tooltip {
+    position: absolute;
+    background: white;
+    border: 1px solid #ccc;
+    padding: 10px;
+    font-size: 14px;
+    color: #333;
+    box-shadow: 0 0 8px rgba(0,0,0,0.1);
+    display: none;
+    max-width: 300px;
+    z-index: 1000;
+  }
+  .anchor {
+    color: #1a73e8;
+    text-decoration: underline;
+    cursor: pointer;
   }
 </style>
 </head>
@@ -266,10 +293,10 @@ THREAD_HTML = '''
 
 <div id="post-list">
 {% for p in posts %}
-  <div class="post" id="post-{{ p.id }}">
-    <span class="anon">{{ p.id }}. 匿名{{ p.anon_id }}</span>
-    <span class="date">{{ p.created_at }}</span>
-    <div class="content">{{ p.content|safe }}</div>
+  <div class="post" id="post-{{ loop.index }}">
+    <span class="anon">{{ loop.index }}. 匿名{{ p[2] }}</span>
+    <span class="date">{{ p[3] }}</span>
+    <div class="content">{{ p[1]|replace(">>", "&gt;&gt;") }}</div>
   </div>
 {% else %}
   <p>まだ投稿はありません。</p>
@@ -280,34 +307,67 @@ THREAD_HTML = '''
   <textarea name="content" placeholder="コメントを書く" required></textarea>
   <button type="submit">投稿する</button>
 </form>
+
 <a href="/">← スレッド一覧に戻る</a>
 
 <script>
-async function fetchPosts() {
-  const res = await fetch(location.pathname + "/posts");
-  const data = await res.json();
-  const postList = document.getElementById("post-list");
-  postList.innerHTML = "";
+const tooltip = document.createElement('div');
+tooltip.className = 'tooltip';
+document.body.appendChild(tooltip);
 
-  data.posts.forEach(post => {
-    const div = document.createElement("div");
-    div.className = "post";
-    div.id = `post-${post.id}`;
-    div.innerHTML = `
-      <span class="anon">${post.id}. 匿名${post.anon_id}</span>
-      <span class="date">${post.created_at}</span>
-      <div class="content">${post.content}</div>
-    `;
-    postList.appendChild(div);
+function attachQuoteHandlers() {
+  document.querySelectorAll('.anchor').forEach(anchor => {
+    const match = anchor.textContent.match(/>>(\d+)/);
+    if (!match) return;
+    const postId = match[1];
+    const target = document.querySelector(`#post-${postId}`);
+    if (!target) return;
+
+    anchor.addEventListener('mouseenter', e => {
+      const content = target.querySelector('.content');
+      if (!content) return;
+      tooltip.innerHTML = content.innerHTML;
+      tooltip.style.display = 'block';
+      tooltip.style.left = e.pageX + 10 + 'px';
+      tooltip.style.top = e.pageY + 10 + 'px';
+    });
+
+    anchor.addEventListener('mouseleave', () => {
+      tooltip.style.display = 'none';
+    });
   });
 }
+
+function fetchPosts() {
+  fetch(location.pathname + "/posts")
+    .then(res => res.json())
+    .then(data => {
+      const postList = document.getElementById("post-list");
+      postList.innerHTML = "";
+      data.posts.forEach((post, i) => {
+        const div = document.createElement("div");
+        div.className = "post";
+        div.id = "post-" + (i + 1);
+        const content = post.content.replace(/>>(\d+)/g, '<span class="anchor">>>$1</span>');
+        div.innerHTML = `
+          <span class="anon">${i + 1}. 匿名${post.anon_id}</span>
+          <span class="date">${post.created_at}</span>
+          <div class="content">${content}</div>
+        `;
+        postList.appendChild(div);
+      });
+      attachQuoteHandlers();
+    });
+}
+
 setInterval(fetchPosts, 5000);
+fetchPosts();
 </script>
+
 </body>
 </html>
 '''
 
-# 各ルート処理
 @app.route('/')
 def index():
     con = sqlite3.connect(DB_PATH)
@@ -338,40 +398,25 @@ def thread(thread_id):
         con.commit()
 
     thread = con.execute('SELECT id, title, anon_id, created_at FROM threads WHERE id=?', (thread_id,)).fetchone()
-    posts_raw = con.execute(
-        'SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at',
-        (thread_id,)
-    ).fetchall()
+    posts = con.execute('SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at', (thread_id,)).fetchall()
     con.close()
 
     if thread is None:
         return "スレッドが見つかりません", 404
-
-    posts = [
-        {"id": row[0], "content": convert_reply_links(row[1]), "anon_id": row[2], "created_at": row[3]}
-        for row in posts_raw
-    ]
 
     return render_template_string(THREAD_HTML, thread=thread, posts=posts)
 
 @app.route('/thread/<int:thread_id>/posts')
 def get_posts(thread_id):
     con = sqlite3.connect(DB_PATH)
-    posts_raw = con.execute(
-        'SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at',
-        (thread_id,)
-    ).fetchall()
+    posts = con.execute('SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at', (thread_id,)).fetchall()
     con.close()
-    posts = [
-        {
-            "id": row[0],
-            "content": str(convert_reply_links(row[1])),
-            "anon_id": row[2],
-            "created_at": row[3]
-        }
-        for row in posts_raw
-    ]
-    return jsonify({"posts": posts})
+    return jsonify({
+        "posts": [
+            {"id": row[0], "content": row[1], "anon_id": row[2], "created_at": row[3]}
+            for row in posts
+        ]
+    })
 
 if __name__ == '__main__':
     app.run(debug=True)
