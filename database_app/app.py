@@ -30,7 +30,7 @@ init_db()
 def generate_anon_id():
     return f"{random.randint(0,9999):04d}"
 
-# CSS付きHTMLテンプレート
+# INDEXページ
 INDEX_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -92,7 +92,7 @@ INDEX_HTML = '''
 <body>
 <h1>スレッド一覧</h1>
 <a href="/new_thread" class="new-thread-btn">＋ 新しいスレッドを作成</a>
-<div>
+<div id="thread-list">
 {% for t in threads %}
   <div class="thread">
     <a class="title" href="/thread/{{ t[0] }}">{{ t[1] }}</a><br>
@@ -102,10 +102,31 @@ INDEX_HTML = '''
   <p>スレッドがありません</p>
 {% endfor %}
 </div>
+
+<script>
+async function fetchThreads() {
+  const res = await fetch("/threads");
+  const data = await res.json();
+  const threadList = document.getElementById("thread-list");
+  threadList.innerHTML = "";
+
+  data.threads.forEach(t => {
+    const div = document.createElement("div");
+    div.className = "thread";
+    div.innerHTML = `
+      <a class="title" href="/thread/${t.id}">${t.title}</a><br>
+      <div class="meta">匿名${t.anon_id} / ${t.created_at}</div>
+    `;
+    threadList.appendChild(div);
+  });
+}
+setInterval(fetchThreads, 5000); // 5秒ごとに更新
+</script>
 </body>
 </html>
 '''
 
+# 新スレッド作成ページ
 NEW_THREAD_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -183,6 +204,7 @@ NEW_THREAD_HTML = '''
 </html>
 '''
 
+# スレッド表示ページ（投稿は自動更新）
 THREAD_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -215,16 +237,16 @@ THREAD_HTML = '''
     border-bottom: 1px solid #dbe9ff;
     padding: 15px 0;
   }
-  .post .anon {
+  .anon {
     font-weight: 700;
     color: #3c4043;
   }
-  .post .date {
+  .date {
     font-size: 12px;
     color: #80868b;
     margin-left: 12px;
   }
-  .post .content {
+  .content {
     margin-top: 8px;
     white-space: pre-wrap;
     line-height: 1.5;
@@ -257,16 +279,6 @@ THREAD_HTML = '''
   }
   form button:hover {
     background-color: #1669c1;
-  }
-  a {
-    display: inline-block;
-    margin-top: 30px;
-    color: #555;
-    text-decoration: none;
-  }
-  a:hover {
-    text-decoration: underline;
-    color: #000;
   }
 </style>
 </head>
@@ -310,15 +322,14 @@ async function fetchPosts() {
     postList.appendChild(div);
   });
 }
-
 setInterval(fetchPosts, 5000);
 </script>
-
 </body>
 </html>
 '''
 
-# Flaskルート
+# Flaskルーティング
+
 @app.route('/')
 def index():
     con = sqlite3.connect(DB_PATH)
@@ -365,6 +376,16 @@ def get_posts(thread_id):
     return jsonify({"posts": [
         {"id": row[0], "content": row[1], "anon_id": row[2], "created_at": row[3]}
         for row in posts
+    ]})
+
+@app.route('/threads')
+def get_threads():
+    con = sqlite3.connect(DB_PATH)
+    threads = con.execute('SELECT id, title, anon_id, created_at FROM threads ORDER BY created_at DESC').fetchall()
+    con.close()
+    return jsonify({"threads": [
+        {"id": t[0], "title": t[1], "anon_id": t[2], "created_at": t[3]}
+        for t in threads
     ]})
 
 if __name__ == '__main__':
