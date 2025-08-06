@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, render_template_string
+from flask import Flask, request, redirect, render_template_string, jsonify
 import sqlite3
 import random
 import os
@@ -30,7 +30,7 @@ init_db()
 def generate_anon_id():
     return f"{random.randint(0,9999):04d}"
 
-# CSS付きテンプレート群（青と白のモダンデザイン反映）
+# CSS付きHTMLテンプレート
 INDEX_HTML = '''
 <!DOCTYPE html>
 <html lang="ja">
@@ -274,6 +274,7 @@ THREAD_HTML = '''
 <h1>{{ thread[1] }}</h1>
 <div class="meta">スレッド作成者: 匿名{{ thread[2] }} / {{ thread[3] }}</div>
 
+<div id="post-list">
 {% for p in posts %}
   <div class="post">
     <span class="anon">匿名{{ p[2] }}</span><span class="date">{{ p[3] }}</span>
@@ -282,6 +283,7 @@ THREAD_HTML = '''
 {% else %}
   <p>まだ投稿はありません。</p>
 {% endfor %}
+</div>
 
 <form method="POST">
   <textarea name="content" placeholder="コメントを書く" required></textarea>
@@ -289,10 +291,34 @@ THREAD_HTML = '''
 </form>
 
 <a href="/">← スレッド一覧に戻る</a>
+
+<script>
+async function fetchPosts() {
+  const res = await fetch(location.pathname + "/posts");
+  const data = await res.json();
+  const postList = document.getElementById("post-list");
+  postList.innerHTML = "";
+
+  data.posts.forEach(post => {
+    const div = document.createElement("div");
+    div.className = "post";
+    div.innerHTML = `
+      <span class="anon">匿名${post.anon_id}</span>
+      <span class="date">${post.created_at}</span>
+      <div class="content">${post.content}</div>
+    `;
+    postList.appendChild(div);
+  });
+}
+
+setInterval(fetchPosts, 5000);
+</script>
+
 </body>
 </html>
 '''
 
+# Flaskルート
 @app.route('/')
 def index():
     con = sqlite3.connect(DB_PATH)
@@ -330,6 +356,16 @@ def thread(thread_id):
         return "スレッドが見つかりません", 404
 
     return render_template_string(THREAD_HTML, thread=thread, posts=posts)
+
+@app.route('/thread/<int:thread_id>/posts')
+def get_posts(thread_id):
+    con = sqlite3.connect(DB_PATH)
+    posts = con.execute('SELECT id, content, anon_id, created_at FROM posts WHERE thread_id=? ORDER BY created_at', (thread_id,)).fetchall()
+    con.close()
+    return jsonify({"posts": [
+        {"id": row[0], "content": row[1], "anon_id": row[2], "created_at": row[3]}
+        for row in posts
+    ]})
 
 if __name__ == '__main__':
     app.run(debug=True)
